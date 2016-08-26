@@ -1,0 +1,332 @@
+"""
+Author: Delan Huang
+Date: 07/06/2015
+Version: 1.0
+
+Purpose: Takes imported lists and draw 2d textures with them (based on density).
+Displays each textures onto a face of a cube.
+"""
+
+# Imports
+from PySide import QtCore, QtOpenGL
+from OpenGL.GL import *
+from OpenGL import GLU
+import numpy as np
+import subprocess
+
+subprocess.call("python setup.py build", shell=True)
+import project
+
+class CubeGraphic(QtOpenGL.QGLWidget):
+    sharedObject = 0  # Allow for more objects/Cubes to be shown on screen in future implementation?
+
+    coords = (
+        ((+1, +1, +1), (-1, +1, +1), (-1, -1, +1), (+1, -1, +1)),  # first image
+        ((+1, +1, -1), (+1, +1, +1), (+1, -1, +1), (+1, -1, -1)),  # second image
+        ((-1, +1, -1), (+1, +1, -1), (+1, -1, -1), (-1, -1, -1)),  # third image
+        ((-1, +1, +1), (-1, +1, -1), (-1, -1, -1), (-1, -1, +1)),  # fourth image
+        ((-1, +1, +1), (+1, +1, +1), (+1, +1, -1), (-1, +1, -1)),  # fifth image
+        ((-1, -1, -1), (+1, -1, -1), (+1, -1, +1), (-1, -1, +1)),  # sixth image
+    )
+
+    def __init__(self):
+        QtOpenGL.QGLWidget.__init__(self)
+
+        # Make list
+        args = project.test()
+        self.list1, self.list2, self.list3, self.list4, self.list5, \
+        self.list6, self.xDim, self.yDim, self.zDim = args
+        # Commandline Variables
+        self.list1, self.list2, self.list3, self.list4, self.list5, \
+        self.list6, self.xDim, self.yDim, self.zDim = args
+        self.img = np.zeros((self.xDim, self.yDim, 4))  # self.imgByte
+        self.setLists()
+
+        # User Controlled Variables
+        self.xRot = 0
+        self.yRot = 0
+        self.zRot = 0
+        self.xPos = 0
+        self.yPos = 0
+        self.zPos = 0
+        self.zoom = 10.0
+
+        # Temp arrays for self.makeTexture
+        self.scaledArray1 = np.zeros((self.xDim, self.yDim))
+        self.scaledArray2 = np.zeros((self.xDim, self.yDim))
+        self.scaledArray3 = np.zeros((self.xDim, self.yDim))
+        self.scaledArray4 = np.zeros((self.xDim, self.yDim))
+        self.scaledArray5 = np.zeros((self.xDim, self.yDim))
+        self.scaledArray6 = np.zeros((self.xDim, self.yDim))
+        self.scaledArrayList = [self.scaledArray1, self.scaledArray2, self.scaledArray3,
+                                self.scaledArray4, self.scaledArray5, self.scaledArray6]
+
+        # Potential Error Checking
+        # self.list1Diff = (self.list1Max - self.list1Min)
+        # if(self.list1Diff == 0):
+        #	self.list1Diff =1
+
+        # Hard coded Variable values
+
+        self.alpha = 255  # 0 is transparent, 255 is opaque
+        self.lastPos = QtCore.QPoint()
+
+    # ===Widget Based Getter and Setter Functions===================================================================================
+    def getXRot(self):
+        return self.xRot
+
+    def getYRot(self):
+        return self.yRot
+
+    def getZRot(self):
+        return self.zRot
+
+    def getXPos(self):
+        return self.xPos
+
+    def getYPos(self):
+        return self.yPos
+
+    def mousePressEvent(self, event):
+        self.lastPos = QtCore.QPoint(event.pos())
+
+    def mouseMoveEvent(self, event):
+        dx = event.x() - self.lastPos.x()
+        dy = event.y() - self.lastPos.y()
+
+        if event.buttons() & QtCore.Qt.LeftButton:
+            self.setXRotation(self.xRot + 8 * dy)
+            self.setYRotation(self.yRot + 8 * dx)
+        elif event.buttons() & QtCore.Qt.RightButton:
+            self.setXRotation(self.xRot + 8 * dy)
+            self.setZRotation(self.zRot + 8 * dx)
+
+        self.lastPos = QtCore.QPoint(event.pos())
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            print "Left Button Released"
+            self.replaceTextures()
+            # print self.list1
+
+    def setXRotation(self, angle):
+        angle = self.normalizeAngle(angle)
+        if angle != self.xRot:
+            self.xRot = angle
+            self.emit(QtCore.SIGNAL("xRotationChanged"), self.xRot)
+            self.updateGL()
+
+    def setYRotation(self, angle):
+        angle = self.normalizeAngle(angle)
+        if angle != self.yRot:
+            self.yRot = angle
+            self.emit(QtCore.SIGNAL("yRotationChanged"), self.yRot)
+            self.updateGL()
+
+    def setZRotation(self, angle):
+        angle = self.normalizeAngle(angle)
+        if angle != self.zRot:
+            self.zRot = angle
+            self.emit(QtCore.SIGNAL("zRotationChanged(int)"), angle)
+            self.updateGL()
+
+    def setXPosition(self, distance):
+        if distance != self.xPos:
+            self.xPos = distance
+            self.emit(QtCore.SIGNAL("xPositionChanged"), self.xPos)
+            self.updateGL()
+
+    def setYPosition(self, distance):
+        if distance != self.yPos:
+            self.yPos = distance
+            self.emit(QtCore.SIGNAL("yPositionChanged"), self.yPos)
+            self.updateGL()
+
+    def setZoom(self, new_zoom):
+        if new_zoom != self.zoom:
+            self.zoom = new_zoom
+            self.emit(QtCore.SIGNAL("scaleChanged"), self.zoom)
+            self.updateGL()
+
+    def normalizeAngle(self, angle):
+        while angle < 0:
+            angle += 360 * 16
+        while angle > 360 * 16:
+            angle -= 360 * 16
+        return angle
+
+    def minimumSizeHint(self):
+        return QtCore.QSize(100, 100)
+        
+    def setLists(self):
+        self.lists = [self.list1, self.list2, self.list3, self.list4, self.list5, self.list6]
+
+    # ===Cube Graphic Texture Functions and Overloads===============================================================================
+    def make2dScaledArray(self, a_list):
+        listMax = max(a_list)
+        listMin = min(a_list)
+        twoDArray = np.zeros((self.xDim, self.yDim))
+        scaledArray = np.zeros((self.xDim, self.yDim))
+
+        for x in xrange(self.xDim):
+            for y in xrange(self.yDim):
+                # Create 2d Texture from a 1d list
+                twoDArray[x][y] = a_list[y * self.xDim + x - 1]
+
+                # Scale intensities in each list with RGB values
+                # Make sure no / 0 errors occur
+                try:
+                    scaledArray[x][y] = round((twoDArray[x][y] - listMin) / (listMax - listMin) * 255)
+                except:
+                    print "List Max and List Min are same values"
+                    scaledArray[x][y] = round((twoDArray[x][y] - listMin) * 255)
+        # print scaledArray[0][0]
+        return scaledArray
+
+    def makeTexture(self, a_list):
+        # Creates texel information for one pixel
+        for x in xrange(self.xDim):
+            for y in xrange(self.yDim):
+                # print a_list[x][y]
+                self.img[x][y][0] = a_list[x][y]
+                self.img[x][y][1] = a_list[x][y]
+                self.img[x][y][2] = a_list[x][y]
+                self.img[x][y][3] = self.alpha
+        # print self.img[0][0]
+
+    def replaceTextures(self):
+        # glEnable(GL_TEXTURE_2D)
+        #glBindTexture(GL_TEXTURE_2D, 0)
+        
+        args = project.test()
+        self.list1, self.list2, self.list3, self.list4, self.list5, \
+        self.list6, self.xDim, self.yDim, self.zDim = args
+        self.setLists()
+        
+        # Make textures for each face
+        for i in range(6):  # Number of faces
+            # Create a new texture for each face
+            # Make 2d Array from 1d Array
+            # print self.scaledArrayList[i]
+            self.scaledArrayList[i] = self.make2dScaledArray(self.lists[i])
+
+            # Make 2d Texture from 2d array
+            self.makeTexture(self.scaledArrayList[i])
+            # texture = glGenTextures(1)
+            # self.textures[i] = texture
+            glBindTexture(GL_TEXTURE_2D, self.textures[i])
+
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                            GL_NEAREST)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                            GL_NEAREST)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, self.xDim,
+                         self.yDim, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                         self.img)             
+            
+            # print self.img
+            
+
+        # Initialize
+        print self.textures
+        #CubeGraphic.sharedObject = self.makeObject()
+
+        # Allow access to alpha value
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        
+        # Change alpha dependent on variable (future = slider?)
+        glBlendColor(0.0, 0.0, 0.0, self.alpha)
+        glEnable(GL_CULL_FACE)  # Disabled allows user to see through main face/plane
+        # glDisable(GL_TEXTURE_2D)
+        
+    def paintGL(self):
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+        glLoadIdentity()
+        glTranslated(0.0, 0.0, -50.0)
+        # Functions with variables update upon movement from sliders
+        glScaled(self.zoom, self.zoom, self.zoom)
+        glRotated(self.xRot / 16.0, 1.0, 0.0, 0.0)
+        glRotated(self.yRot / 16.0, 0.0, 1.0, 0.0)
+        glRotated(self.zRot / 16.0, 0.0, 0.0, 1.0)
+        glTranslate(0.0, 0.0, 0.0)
+        glTranslated(self.xPos / 5.0, self.yPos / 5.0, self.zPos / 5.0)
+        glCallList(CubeGraphic.sharedObject)
+
+    def resizeGL(self, width, height):
+        glViewport(0, 0, width, height)
+
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        GLU.gluPerspective(10.0, width / height, 1.0, 100.0)
+        glMatrixMode(GL_MODELVIEW)
+
+    def initializeGL(self):
+        glClearColor(0.0, 0.0, 0.0, 1.0)
+        glShadeModel(GL_FLAT)
+        glEnable(GL_DEPTH_TEST)
+        glEnable(GL_TEXTURE_2D)
+
+        self.textures = []
+
+        # Make textures for each face
+        for i in range(6):  # Number of faces
+            # Create a new texture for each face
+            # Make 2d Array from 1d Array
+            # print self.scaledArrayList[i]
+            self.scaledArrayList[i] = self.make2dScaledArray(self.lists[i])
+
+            # Make 2d Texture from 2d array
+            self.makeTexture(self.scaledArrayList[i])
+
+            texture = glGenTextures(1)
+            self.textures.append(texture)
+            glBindTexture(GL_TEXTURE_2D, self.textures[i])
+
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                            GL_NEAREST)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                            GL_NEAREST)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, self.xDim,
+                         self.yDim, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                         self.img)             
+            # print self.img
+            
+        # Initialize
+        # print self.textures
+        CubeGraphic.sharedObject = self.makeObject()
+
+        # Allow access to alpha value
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        
+        # Change alpha dependent on variable (future = slider?)
+        glBlendColor(0.0, 0.0, 0.0, self.alpha)
+        glDisable(GL_CULL_FACE)  # Disabled allows user to see through main face/plane
+        # glDisable(GL_TEXTURE_2D)
+
+    def makeObject(self):
+        dlist = glGenLists(1)
+        glNewList(dlist, GL_COMPILE)
+
+        for i in range(6):  # Create vertices for faces
+            # glBindTexture(GL_TEXTURE_2D, self.textures[i])
+
+            glBegin(GL_QUADS)
+            for j in range(4):  # Create vertices for texture
+                tx = {False: 0, True: 1}[j == 0 or j == 3]
+                ty = {False: 0, True: 1}[j == 0 or j == 1]
+                glTexCoord2d(tx, ty)
+                glVertex3d(0.2 * CubeGraphic.coords[i][j][0],
+                           0.2 * CubeGraphic.coords[i][j][1],
+                           0.2 * CubeGraphic.coords[i][j][2])
+
+            glEnd()
+
+        glEndList()
+        return dlist
